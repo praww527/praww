@@ -1,4 +1,4 @@
-const BASE = process.env.REACT_APP_BACKEND_URL + "/api";
+REACT_APP_BACKEND_URL=https://prawwbackend.onrender.com
 
 export function getToken() {
   return localStorage.getItem("praww_token");
@@ -28,5 +28,7 @@ export async function apiFetch(path, options = {}) {
     throw new Error(err.detail || err.message || "Request failed");
   }
   if (res.status === 204) return null;
-  return res.json();
+  
+  const data = await res.json();
+  return data;
 }
