@@ -9,7 +9,7 @@ export function AuthProvider({ children }) {
 
   const fetchUser = useCallback(async () => {
     try {
-      const u = await apiFetch("/auth/user");
+      const u = await apiFetch("/api/user");
       setUser(u);
     } catch {
       setUser(null);
@@ -21,7 +21,7 @@ export function AuthProvider({ children }) {
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
   const login = async (email, password) => {
-    const res = await apiFetch("/auth/login", {
+    const res = await apiFetch("/api/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
@@ -33,7 +33,7 @@ export function AuthProvider({ children }) {
   };
 
   const register = async (email, password, firstName, lastName) => {
-    const res = await apiFetch("/auth/register", {
+    const res = await apiFetch("/api/register", {
       method: "POST",
       body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
     });
