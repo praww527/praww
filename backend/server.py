@@ -289,6 +289,9 @@ async def get_trending_stories():
         {"$project": {"_id": 0, "likes": 0}}
     ]
     stories = await db.stories.aggregate(pipeline).to_list(20)
+    for s in stories:
+        author = await db.users.find_one({"id": s.get("author_id")}, {"_id": 0, "first_name": 1, "last_name": 1, "username": 1})
+        s["author_name"] = _get_display_name(author) if author else "Unknown"
     return stories
 
 @api_router.get("/stories/{story_id}")
