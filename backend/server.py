@@ -1,89 +1,674 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Response, Cookie
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
-from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
+from typing import List, Optional, Any
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from dotenv import load_dotenv
+import os, uuid, bcrypt, jwt, logging
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+MONGO_URL = os.environ["MONGO_URL"]
+DB_NAME = os.environ["DB_NAME"]
+SECRET_KEY = os.environ.get("JWT_SECRET", "prawwreads-secret-key-2024")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
 
-# Create the main app without a prefix
-app = FastAPI()
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
 
-# Create a router with the /api prefix
+app = FastAPI(title="PRaww Reads API")
 api_router = APIRouter(prefix="/api")
-
-
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+# ── Helpers ─────────────────────────────────────────────────────────────────
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode(), hashed.encode())
+
+def create_token(user_id: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+
+def decode_token(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("sub")
+    except jwt.PyJWTError:
+        return None
+
+async def get_current_user(token: Optional[str] = Cookie(default=None, alias="praww_token")):
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_id = decode_token(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+async def get_optional_user(token: Optional[str] = Cookie(default=None, alias="praww_token")):
+    if not token:
+        return None
+    user_id = decode_token(token)
+    if not user_id:
+        return None
+    return await db.users.find_one({"id": user_id}, {"_id": 0})
+
+def safe_user(u: dict) -> dict:
+    return {k: v for k, v in u.items() if k != "password_hash"}
+
+def to_str_id(doc: dict) -> dict:
+    """Ensure all IDs are strings and remove MongoDB _id"""
+    doc.pop("_id", None)
+    return doc
+
+# ── Models ──────────────────────────────────────────────────────────────────
+class RegisterInput(BaseModel):
+    email: str
+    password: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+class LoginInput(BaseModel):
+    email: str
+    password: str
+
+class UpdateProfileInput(BaseModel):
+    username: Optional[str] = None
+    bio: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    profile_image_url: Optional[str] = None
+
+class CreateStoryInput(BaseModel):
+    title: str
+    content: str
+    description: Optional[str] = None
+    cover_image_url: Optional[str] = None
+
+class UpdateStoryInput(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    description: Optional[str] = None
+    cover_image_url: Optional[str] = None
+
+class CreateChapterInput(BaseModel):
+    title: str
+    content: str
+    order_index: Optional[int] = None
+
+class UpdateChapterInput(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    order_index: Optional[int] = None
+
+class CreateCommentInput(BaseModel):
+    content: str
+    parent_id: Optional[str] = None
+
+class CreateBookInput(BaseModel):
+    title: str
+    author: Optional[str] = None
+    price: float
+    condition: str = "good"
+    allow_swap: bool = False
+    swap_for: Optional[str] = None
+    image_url: Optional[str] = None
+
+class UpdateBookInput(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    price: Optional[float] = None
+    condition: Optional[str] = None
+    allow_swap: Optional[bool] = None
+    swap_for: Optional[str] = None
+    image_url: Optional[str] = None
+    is_sold: Optional[bool] = None
+
+class SendMessageInput(BaseModel):
+    book_id: str
+    receiver_id: str
+    content: str
+
+# ── Auth Routes ─────────────────────────────────────────────────────────────
+@api_router.post("/auth/register")
+async def register(data: RegisterInput, response: Response):
+    email = data.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Valid email required")
+    if not data.password or len(data.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        raise HTTPException(409, "Email already in use")
+    user_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    # Auto-generate username from email
+    base_username = email.split("@")[0].replace(".", "_").replace("+", "_")
+    username_candidate = base_username
+    suffix = 1
+    while await db.users.find_one({"username": username_candidate}):
+        username_candidate = f"{base_username}_{suffix}"
+        suffix += 1
+    user = {
+        "id": user_id,
+        "email": email,
+        "password_hash": hash_password(data.password),
+        "first_name": data.first_name or "",
+        "last_name": data.last_name or "",
+        "username": username_candidate,
+        "bio": "",
+        "profile_image_url": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.users.insert_one(user)
+    token = create_token(user_id)
+    response.set_cookie("praww_token", token, httponly=True, max_age=3600 * ACCESS_TOKEN_EXPIRE_HOURS, samesite="lax")
+    return safe_user(to_str_id(user))
+
+@api_router.post("/auth/login")
+async def login(data: LoginInput, response: Response):
+    email = data.email.strip().lower()
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(401, "Invalid email or password")
+    token = create_token(user["id"])
+    response.set_cookie("praww_token", token, httponly=True, max_age=3600 * ACCESS_TOKEN_EXPIRE_HOURS, samesite="lax")
+    return safe_user(user)
+
+@api_router.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("praww_token")
+    return {"message": "Logged out"}
+
+@api_router.get("/auth/user")
+async def get_user(current_user: dict = Depends(get_current_user)):
+    return safe_user(current_user)
+
+# ── Profile Routes ──────────────────────────────────────────────────────────
+@api_router.get("/profile/me")
+async def get_my_profile(current_user: dict = Depends(get_current_user)):
+    stories = await db.stories.find({"author_id": current_user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    followers = await db.follows.count_documents({"following_id": current_user["id"]})
+    following = await db.follows.count_documents({"follower_id": current_user["id"]})
+    return {**safe_user(current_user), "stories": stories, "follower_count": followers, "following_count": following}
+
+@api_router.get("/profile/{user_id}")
+async def get_profile(user_id: str, current_user: Optional[dict] = Depends(get_optional_user)):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    stories = await db.stories.find({"author_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    followers = await db.follows.count_documents({"following_id": user_id})
+    following = await db.follows.count_documents({"follower_id": user_id})
+    is_following = False
+    if current_user:
+        is_following = await db.follows.count_documents({"follower_id": current_user["id"], "following_id": user_id}) > 0
+    return {**safe_user(user), "stories": stories, "follower_count": followers, "following_count": following, "is_following": is_following}
+
+@api_router.patch("/profile")
+async def update_profile(data: UpdateProfileInput, current_user: dict = Depends(get_current_user)):
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one({"id": current_user["id"]}, {"$set": updates})
+    updated = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    return safe_user(updated)
+
+# ── Follow Routes ───────────────────────────────────────────────────────────
+@api_router.post("/follow/{user_id}")
+async def follow_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    if user_id == current_user["id"]:
+        raise HTTPException(400, "Cannot follow yourself")
+    existing = await db.follows.find_one({"follower_id": current_user["id"], "following_id": user_id})
+    if not existing:
+        await db.follows.insert_one({"follower_id": current_user["id"], "following_id": user_id, "created_at": datetime.now(timezone.utc).isoformat()})
+    count = await db.follows.count_documents({"following_id": user_id})
+    return {"following": True, "follower_count": count}
+
+@api_router.delete("/follow/{user_id}")
+async def unfollow_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    await db.follows.delete_one({"follower_id": current_user["id"], "following_id": user_id})
+    count = await db.follows.count_documents({"following_id": user_id})
+    return {"following": False, "follower_count": count}
+
+@api_router.get("/follow/{user_id}/status")
+async def follow_status(user_id: str, current_user: dict = Depends(get_current_user)):
+    following = await db.follows.count_documents({"follower_id": current_user["id"], "following_id": user_id}) > 0
+    count = await db.follows.count_documents({"following_id": user_id})
+    return {"following": following, "follower_count": count}
+
+# ── Story Routes ─────────────────────────────────────────────────────────────
+@api_router.get("/stories")
+async def list_stories(current_user: Optional[dict] = Depends(get_optional_user)):
+    stories = await db.stories.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for s in stories:
+        author = await db.users.find_one({"id": s["author_id"]}, {"_id": 0, "first_name": 1, "last_name": 1, "username": 1})
+        s["author_name"] = _get_display_name(author) if author else "Unknown"
+        like_count = await db.story_likes.count_documents({"story_id": s["id"]})
+        s["like_count"] = like_count
+        s["user_liked"] = False
+        if current_user:
+            s["user_liked"] = await db.story_likes.count_documents({"story_id": s["id"], "user_id": current_user["id"]}) > 0
+    return stories
+
+@api_router.get("/stories/favorites")
+async def get_story_favorites(current_user: dict = Depends(get_current_user)):
+    favs = await db.story_favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(100)
+    story_ids = [f["story_id"] for f in favs]
+    if not story_ids:
+        return []
+    stories = await db.stories.find({"id": {"$in": story_ids}}, {"_id": 0}).to_list(100)
+    return stories
+
+@api_router.get("/stories/trending")
+async def get_trending_stories():
+    pipeline = [
+        {"$lookup": {"from": "story_likes", "localField": "id", "foreignField": "story_id", "as": "likes"}},
+        {"$addFields": {"like_count": {"$size": "$likes"}}},
+        {"$sort": {"like_count": -1, "created_at": -1}},
+        {"$limit": 20},
+        {"$project": {"_id": 0, "likes": 0}}
+    ]
+    stories = await db.stories.aggregate(pipeline).to_list(20)
+    return stories
+
+@api_router.get("/stories/{story_id}")
+async def get_story(story_id: str, current_user: Optional[dict] = Depends(get_optional_user)):
+    story = await db.stories.find_one({"id": story_id}, {"_id": 0})
+    if not story:
+        raise HTTPException(404, "Story not found")
+    author = await db.users.find_one({"id": story["author_id"]}, {"_id": 0, "first_name": 1, "last_name": 1, "username": 1})
+    story["author_name"] = _get_display_name(author) if author else "Unknown"
+    like_count = await db.story_likes.count_documents({"story_id": story_id})
+    story["like_count"] = like_count
+    story["user_liked"] = False
+    if current_user:
+        story["user_liked"] = await db.story_likes.count_documents({"story_id": story_id, "user_id": current_user["id"]}) > 0
+    # Story favorite status
+    story["user_favorited"] = False
+    if current_user:
+        story["user_favorited"] = await db.story_favorites.count_documents({"story_id": story_id, "user_id": current_user["id"]}) > 0
+    return story
+
+@api_router.post("/stories")
+async def create_story(data: CreateStoryInput, current_user: dict = Depends(get_current_user)):
+    story_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    story = {
+        "id": story_id,
+        "title": data.title,
+        "content": data.content,
+        "description": data.description or "",
+        "cover_image_url": data.cover_image_url or "",
+        "author_id": current_user["id"],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.stories.insert_one(story)
+    story.pop("_id", None)
+    return story
+
+@api_router.patch("/stories/{story_id}")
+async def update_story(story_id: str, data: UpdateStoryInput, current_user: dict = Depends(get_current_user)):
+    story = await db.stories.find_one({"id": story_id, "author_id": current_user["id"]})
+    if not story:
+        raise HTTPException(403, "Story not found or unauthorized")
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.stories.update_one({"id": story_id}, {"$set": updates})
+    updated = await db.stories.find_one({"id": story_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/stories/{story_id}")
+async def delete_story(story_id: str, current_user: dict = Depends(get_current_user)):
+    result = await db.stories.delete_one({"id": story_id, "author_id": current_user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(403, "Story not found or unauthorized")
+    return {"deleted": True}
+
+# Story Likes
+@api_router.get("/stories/{story_id}/likes")
+async def get_story_likes(story_id: str, current_user: Optional[dict] = Depends(get_optional_user)):
+    count = await db.story_likes.count_documents({"story_id": story_id})
+    user_liked = False
+    if current_user:
+        user_liked = await db.story_likes.count_documents({"story_id": story_id, "user_id": current_user["id"]}) > 0
+    return {"count": count, "user_liked": user_liked}
+
+@api_router.post("/stories/{story_id}/like")
+async def toggle_story_like(story_id: str, current_user: dict = Depends(get_current_user)):
+    existing = await db.story_likes.find_one({"story_id": story_id, "user_id": current_user["id"]})
+    if existing:
+        await db.story_likes.delete_one({"story_id": story_id, "user_id": current_user["id"]})
+        liked = False
+    else:
+        await db.story_likes.insert_one({"story_id": story_id, "user_id": current_user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+        liked = True
+    count = await db.story_likes.count_documents({"story_id": story_id})
+    return {"liked": liked, "count": count}
+
+# Story Favorites
+@api_router.post("/stories/{story_id}/favorite")
+async def toggle_story_favorite(story_id: str, current_user: dict = Depends(get_current_user)):
+    existing = await db.story_favorites.find_one({"story_id": story_id, "user_id": current_user["id"]})
+    if existing:
+        await db.story_favorites.delete_one({"story_id": story_id, "user_id": current_user["id"]})
+        favorited = False
+    else:
+        await db.story_favorites.insert_one({"story_id": story_id, "user_id": current_user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+        favorited = True
+    return {"favorited": favorited}
+
+# Story Progress
+@api_router.get("/stories/{story_id}/progress")
+async def get_story_progress(story_id: str, current_user: dict = Depends(get_current_user)):
+    prog = await db.story_progress.find_one({"story_id": story_id, "user_id": current_user["id"]}, {"_id": 0})
+    return prog or {"progress": 0}
+
+@api_router.post("/stories/{story_id}/progress")
+async def update_story_progress(story_id: str, data: dict, current_user: dict = Depends(get_current_user)):
+    progress = data.get("progress", 0)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.story_progress.update_one(
+        {"story_id": story_id, "user_id": current_user["id"]},
+        {"$set": {"progress": progress, "updated_at": now, "story_id": story_id, "user_id": current_user["id"]}},
+        upsert=True
+    )
+    return {"progress": progress}
+
+# Story Comments
+@api_router.get("/stories/{story_id}/comments")
+async def get_story_comments(story_id: str, current_user: Optional[dict] = Depends(get_optional_user)):
+    raw = await db.story_comments.find({"story_id": story_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    enriched = []
+    for c in raw:
+        author = await db.users.find_one({"id": c["user_id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1})
+        like_count = await db.comment_likes.count_documents({"comment_id": c["id"]})
+        user_liked = False
+        if current_user:
+            user_liked = await db.comment_likes.count_documents({"comment_id": c["id"], "user_id": current_user["id"]}) > 0
+        enriched.append({**c, "author_name": _get_display_name(author) if author else "Unknown", "like_count": like_count, "user_liked": user_liked, "replies": []})
+    # Nest replies
+    top_level = [c for c in enriched if not c.get("parent_id")]
+    replies = [c for c in enriched if c.get("parent_id")]
+    for comment in top_level:
+        comment["replies"] = [r for r in replies if r.get("parent_id") == comment["id"]]
+    return top_level
+
+@api_router.post("/stories/{story_id}/comments")
+async def create_story_comment(story_id: str, data: CreateCommentInput, current_user: dict = Depends(get_current_user)):
+    comment_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    comment = {"id": comment_id, "story_id": story_id, "user_id": current_user["id"], "content": data.content, "parent_id": data.parent_id, "created_at": now, "updated_at": now}
+    await db.story_comments.insert_one(comment)
+    comment.pop("_id", None)
+    author = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1})
+    return {**comment, "author_name": _get_display_name(author), "like_count": 0, "user_liked": False, "replies": []}
+
+@api_router.patch("/stories/comments/{comment_id}")
+async def update_comment(comment_id: str, data: dict, current_user: dict = Depends(get_current_user)):
+    content = data.get("content", "").strip()
+    if not content:
+        raise HTTPException(400, "Content required")
+    result = await db.story_comments.update_one({"id": comment_id, "user_id": current_user["id"]}, {"$set": {"content": content, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count == 0:
+        raise HTTPException(403, "Comment not found or unauthorized")
+    updated = await db.story_comments.find_one({"id": comment_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/stories/comments/{comment_id}")
+async def delete_comment(comment_id: str, current_user: dict = Depends(get_current_user)):
+    await db.story_comments.delete_many({"parent_id": comment_id})
+    await db.comment_likes.delete_many({"comment_id": comment_id})
+    result = await db.story_comments.delete_one({"id": comment_id, "user_id": current_user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(403, "Comment not found or unauthorized")
+    return {"deleted": True}
+
+@api_router.post("/stories/comments/{comment_id}/like")
+async def toggle_comment_like(comment_id: str, current_user: dict = Depends(get_current_user)):
+    existing = await db.comment_likes.find_one({"comment_id": comment_id, "user_id": current_user["id"]})
+    if existing:
+        await db.comment_likes.delete_one({"comment_id": comment_id, "user_id": current_user["id"]})
+        liked = False
+    else:
+        await db.comment_likes.insert_one({"comment_id": comment_id, "user_id": current_user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+        liked = True
+    count = await db.comment_likes.count_documents({"comment_id": comment_id})
+    return {"liked": liked, "count": count}
+
+# ── Chapter Routes ───────────────────────────────────────────────────────────
+@api_router.get("/stories/{story_id}/chapters")
+async def get_chapters(story_id: str):
+    chapters = await db.chapters.find({"story_id": story_id}, {"_id": 0}).sort("order_index", 1).to_list(100)
+    return chapters
+
+@api_router.post("/stories/{story_id}/chapters")
+async def create_chapter(story_id: str, data: CreateChapterInput, current_user: dict = Depends(get_current_user)):
+    story = await db.stories.find_one({"id": story_id, "author_id": current_user["id"]})
+    if not story:
+        raise HTTPException(403, "Story not found or unauthorized")
+    count = await db.chapters.count_documents({"story_id": story_id})
+    chapter_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    chapter = {"id": chapter_id, "story_id": story_id, "title": data.title, "content": data.content, "order_index": data.order_index if data.order_index is not None else count, "created_at": now, "updated_at": now}
+    await db.chapters.insert_one(chapter)
+    chapter.pop("_id", None)
+    return chapter
+
+@api_router.patch("/chapters/{chapter_id}")
+async def update_chapter(chapter_id: str, data: UpdateChapterInput, current_user: dict = Depends(get_current_user)):
+    chapter = await db.chapters.find_one({"id": chapter_id})
+    if not chapter:
+        raise HTTPException(404, "Chapter not found")
+    story = await db.stories.find_one({"id": chapter["story_id"], "author_id": current_user["id"]})
+    if not story:
+        raise HTTPException(403, "Unauthorized")
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.chapters.update_one({"id": chapter_id}, {"$set": updates})
+    updated = await db.chapters.find_one({"id": chapter_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/chapters/{chapter_id}")
+async def delete_chapter(chapter_id: str, current_user: dict = Depends(get_current_user)):
+    chapter = await db.chapters.find_one({"id": chapter_id})
+    if not chapter:
+        raise HTTPException(404, "Chapter not found")
+    story = await db.stories.find_one({"id": chapter["story_id"], "author_id": current_user["id"]})
+    if not story:
+        raise HTTPException(403, "Unauthorized")
+    await db.chapters.delete_one({"id": chapter_id})
+    return {"deleted": True}
+
+# ── Marketplace (Books) Routes ───────────────────────────────────────────────
+@api_router.get("/books")
+async def list_books(current_user: Optional[dict] = Depends(get_optional_user)):
+    books = await db.books.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for b in books:
+        seller = await db.users.find_one({"id": b["seller_id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1, "email": 1})
+        b["seller_name"] = _get_display_name(seller) if seller else "Unknown"
+    return books
+
+@api_router.get("/books/{book_id}")
+async def get_book(book_id: str):
+    book = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not book:
+        raise HTTPException(404, "Book not found")
+    seller = await db.users.find_one({"id": book["seller_id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1, "email": 1})
+    book["seller_name"] = _get_display_name(seller) if seller else "Unknown"
+    book["seller_email"] = seller.get("email") if seller else None
+    return book
+
+@api_router.post("/books")
+async def create_book(data: CreateBookInput, current_user: dict = Depends(get_current_user)):
+    book_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    book = {
+        "id": book_id,
+        "title": data.title,
+        "author": data.author or "",
+        "price": data.price,
+        "condition": data.condition,
+        "allow_swap": data.allow_swap,
+        "swap_for": data.swap_for or "",
+        "image_url": data.image_url or "",
+        "seller_id": current_user["id"],
+        "is_sold": False,
+        "created_at": now,
+    }
+    await db.books.insert_one(book)
+    book.pop("_id", None)
+    return book
+
+@api_router.patch("/books/{book_id}")
+async def update_book(book_id: str, data: UpdateBookInput, current_user: dict = Depends(get_current_user)):
+    book = await db.books.find_one({"id": book_id, "seller_id": current_user["id"]})
+    if not book:
+        raise HTTPException(403, "Book not found or unauthorized")
+    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    await db.books.update_one({"id": book_id}, {"$set": updates})
+    updated = await db.books.find_one({"id": book_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/books/{book_id}")
+async def delete_book(book_id: str, current_user: dict = Depends(get_current_user)):
+    result = await db.books.delete_one({"id": book_id, "seller_id": current_user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(403, "Book not found or unauthorized")
+    return {"deleted": True}
+
+@api_router.post("/books/{book_id}/sold")
+async def mark_book_sold(book_id: str, current_user: dict = Depends(get_current_user)):
+    book = await db.books.find_one({"id": book_id, "seller_id": current_user["id"]})
+    if not book:
+        raise HTTPException(403, "Book not found or unauthorized")
+    await db.books.update_one({"id": book_id}, {"$set": {"is_sold": not book.get("is_sold", False)}})
+    updated = await db.books.find_one({"id": book_id}, {"_id": 0})
+    return updated
+
+# ── Messaging Routes ─────────────────────────────────────────────────────────
+@api_router.post("/messages")
+async def send_message(data: SendMessageInput, current_user: dict = Depends(get_current_user)):
+    msg_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    msg = {
+        "id": msg_id,
+        "book_id": data.book_id,
+        "sender_id": current_user["id"],
+        "receiver_id": data.receiver_id,
+        "content": data.content,
+        "is_read": False,
+        "created_at": now,
+    }
+    await db.messages.insert_one(msg)
+    msg.pop("_id", None)
+    return msg
+
+@api_router.get("/messages/book/{book_id}")
+async def get_book_messages(book_id: str, current_user: dict = Depends(get_current_user)):
+    book = await db.books.find_one({"id": book_id}, {"_id": 0})
+    if not book:
+        raise HTTPException(404, "Book not found")
+    is_seller = book["seller_id"] == current_user["id"]
+    if is_seller:
+        msgs = await db.messages.find({"book_id": book_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    else:
+        msgs = await db.messages.find({"book_id": book_id, "$or": [{"sender_id": current_user["id"]}, {"receiver_id": current_user["id"]}]}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    # Enrich with sender names
+    for m in msgs:
+        sender = await db.users.find_one({"id": m["sender_id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1})
+        m["sender_name"] = _get_display_name(sender) if sender else "Unknown"
+    # Mark as read
+    await db.messages.update_many({"book_id": book_id, "receiver_id": current_user["id"]}, {"$set": {"is_read": True}})
+    return msgs
+
+@api_router.get("/messages/inbox")
+async def get_inbox(current_user: dict = Depends(get_current_user)):
+    msgs = await db.messages.find(
+        {"$or": [{"sender_id": current_user["id"]}, {"receiver_id": current_user["id"]}]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    
+    threads: dict = {}
+    for m in msgs:
+        other_user = m["receiver_id"] if m["sender_id"] == current_user["id"] else m["sender_id"]
+        key = f"{m['book_id']}:{other_user}"
+        if key not in threads:
+            threads[key] = {"messages": [], "other_user_id": other_user, "book_id": m["book_id"]}
+        threads[key]["messages"].append(m)
+    
+    result = []
+    for key, thread in threads.items():
+        book = await db.books.find_one({"id": thread["book_id"]}, {"_id": 0, "title": 1})
+        other_user = await db.users.find_one({"id": thread["other_user_id"]}, {"_id": 0, "username": 1, "first_name": 1, "last_name": 1, "email": 1})
+        if not book:
+            continue
+        unread = sum(1 for m in thread["messages"] if m["receiver_id"] == current_user["id"] and not m["is_read"])
+        result.append({
+            "book_id": thread["book_id"],
+            "book_title": book.get("title", ""),
+            "other_user_id": thread["other_user_id"],
+            "other_user_name": _get_display_name(other_user) if other_user else "Unknown",
+            "other_user_email": other_user.get("email", "") if other_user else "",
+            "last_message": thread["messages"][0],
+            "unread": unread,
+        })
+    return sorted(result, key=lambda x: x["last_message"]["created_at"], reverse=True)
+
+# ── Favorites (Books) Routes ─────────────────────────────────────────────────
+@api_router.get("/favorites")
+async def get_book_favorites(current_user: dict = Depends(get_current_user)):
+    favs = await db.book_favorites.find({"user_id": current_user["id"]}, {"_id": 0}).to_list(100)
+    book_ids = [f["book_id"] for f in favs]
+    if not book_ids:
+        return []
+    books = await db.books.find({"id": {"$in": book_ids}}, {"_id": 0}).to_list(100)
+    return books
+
+@api_router.post("/books/{book_id}/favorite")
+async def toggle_book_favorite(book_id: str, current_user: dict = Depends(get_current_user)):
+    existing = await db.book_favorites.find_one({"book_id": book_id, "user_id": current_user["id"]})
+    if existing:
+        await db.book_favorites.delete_one({"book_id": book_id, "user_id": current_user["id"]})
+        return {"is_favorite": False}
+    await db.book_favorites.insert_one({"book_id": book_id, "user_id": current_user["id"], "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"is_favorite": True}
+
+# ── Helper ───────────────────────────────────────────────────────────────────
+def _get_display_name(user: Optional[dict]) -> str:
+    if not user:
+        return "Unknown"
+    if user.get("username"):
+        return user["username"]
+    fn = user.get("first_name", "")
+    ln = user.get("last_name", "")
+    if fn or ln:
+        return f"{fn} {ln}".strip()
+    return user.get("email", "Unknown")
+
+# ── Health ───────────────────────────────────────────────────────────────────
+@api_router.get("/")
+async def root():
+    return {"message": "PRaww Reads API"}
+
+app.include_router(api_router)
