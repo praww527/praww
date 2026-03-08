@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Response, Cookie
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Response, Cookie, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -53,7 +53,15 @@ def decode_token(token: str) -> Optional[str]:
     except jwt.PyJWTError:
         return None
 
-async def get_current_user(token: Optional[str] = Cookie(default=None, alias="praww_token")):
+def _extract_token(request) -> Optional[str]:
+    """Extract token from Authorization header OR cookie"""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return request.cookies.get("praww_token")
+
+async def get_current_user(request: Request):
+    token = _extract_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     user_id = decode_token(token)
@@ -64,7 +72,8 @@ async def get_current_user(token: Optional[str] = Cookie(default=None, alias="pr
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-async def get_optional_user(token: Optional[str] = Cookie(default=None, alias="praww_token")):
+async def get_optional_user(request: Request):
+    token = _extract_token(request)
     if not token:
         return None
     user_id = decode_token(token)
@@ -183,7 +192,9 @@ async def register(data: RegisterInput, response: Response):
     await db.users.insert_one(user)
     token = create_token(user_id)
     response.set_cookie("praww_token", token, httponly=True, max_age=3600 * ACCESS_TOKEN_EXPIRE_HOURS, samesite="lax")
-    return safe_user(to_str_id(user))
+    result = safe_user(to_str_id(user))
+    result["token"] = token
+    return result
 
 @api_router.post("/auth/login")
 async def login(data: LoginInput, response: Response):
@@ -193,7 +204,9 @@ async def login(data: LoginInput, response: Response):
         raise HTTPException(401, "Invalid email or password")
     token = create_token(user["id"])
     response.set_cookie("praww_token", token, httponly=True, max_age=3600 * ACCESS_TOKEN_EXPIRE_HOURS, samesite="lax")
-    return safe_user(user)
+    result = safe_user(user)
+    result["token"] = token
+    return result
 
 @api_router.post("/auth/logout")
 async def logout(response: Response):

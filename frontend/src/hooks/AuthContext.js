@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { apiFetch } from "../lib/api";
+import { apiFetch, setToken } from "../lib/api";
 
 const AuthContext = createContext(null);
 
@@ -21,25 +21,31 @@ export function AuthProvider({ children }) {
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
   const login = async (email, password) => {
-    const u = await apiFetch("/auth/login", {
+    const res = await apiFetch("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+    // res contains { token, ...user }
+    setToken(res.token);
+    const { token: _, ...u } = res;
     setUser(u);
     return u;
   };
 
   const register = async (email, password, firstName, lastName) => {
-    const u = await apiFetch("/auth/register", {
+    const res = await apiFetch("/auth/register", {
       method: "POST",
       body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
     });
+    setToken(res.token);
+    const { token: _, ...u } = res;
     setUser(u);
     return u;
   };
 
   const logout = async () => {
-    await apiFetch("/auth/logout", { method: "POST" });
+    await apiFetch("/auth/logout", { method: "POST" }).catch(() => {});
+    setToken(null);
     setUser(null);
   };
 
