@@ -22,7 +22,6 @@ export async function apiFetch(path, options = {}) {
     headers["Authorization"] = `Bearer ${token}`;
   }
   const res = await fetch(`${BASE}${path}`, {
-    credentials: "include",
     ...options,
     headers,
   });
