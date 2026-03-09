@@ -44,7 +44,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
-    await apiFetch("/auth/logout", { method: "POST" }).catch(() => {});
+    await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     setToken(null);
     setUser(null);
   };
