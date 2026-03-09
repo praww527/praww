@@ -24,13 +24,16 @@ db = client[DB_NAME]
 app = FastAPI(title="PRaww Reads API")
 api_router = APIRouter(prefix="/api")
 
-# ✅ FIXED
-origins = os.environ.get("CORS_ORIGINS", "https://prawwfront.onrender.com").split(",")
+replit_dev_domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
+default_origins = "https://prawwfront.onrender.com"
+if replit_dev_domain:
+    default_origins += f",https://{replit_dev_domain}"
+origins = os.environ.get("CORS_ORIGINS", default_origins).split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=origins,  # Must be explicit URL, never "*" with credentials
+    allow_origins=origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
