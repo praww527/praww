@@ -52,19 +52,18 @@ export default function Profile() {
     }
   }, [authLoading, userId, me]);
 
- async function fetchProfile() {
-  setLoading(true);
-  try {
-    const endpoint = isOwnProfile ? "/profile" : `/profile/${userId}`;
-    const res = await apiFetch(endpoint);
-    const data = await res.json();
-    setProfile(data);
-  } catch {
-    setProfile(null);
-  } finally {
-    setLoading(false);
+  async function fetchProfile() {
+    setLoading(true);
+    try {
+      const endpoint = isOwnProfile ? "/profile/me" : `/profile/${userId}`;
+      const p = await apiFetch(endpoint);
+      setProfile(p);
+    } catch {
+      setProfile(null);
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   function openEdit() {
     setEditForm({
@@ -325,3 +324,4 @@ export default function Profile() {
     </div>
   );
 }
+
