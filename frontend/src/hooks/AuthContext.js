@@ -21,15 +21,17 @@ export function AuthProvider({ children }) {
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
   const login = async (email, password) => {
-    const res = await apiFetch("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
-    // res contains { token, ...user }
-   setToken(res.token);
-const { token, ...user } = res;
-setUser(user);
-return user;
+  const res = await apiFetch("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+
+  const data = await res.json();
+
+  setToken(data.token);
+  const { token, ...user } = data;
+  setUser(user);
+  return user;
   };
 
   const register = async (email, password, firstName, lastName) => {
