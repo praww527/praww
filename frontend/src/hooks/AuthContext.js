@@ -26,41 +26,27 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ email, password }),
     });
     // res contains { token, ...user }
-    29 setToken(res.token);
-
-30 const userData = {
-31   id: res.id,
-32   email: res.email,
-33   first_name: res.first_name,
-34   last_name: res.last_name
-35 };
-
-36 setUser(userData);
-37 return userData;
+    setToken(res.token);
+    const { token: _, ...u } = res;
+    setUser(u);
+    return u;
   };
 
   const register = async (email, password, firstName, lastName) => {
-  const res = await apiFetch("/api/auth/register", {
-    method: "POST",
-    body: JSON.stringify({
-      email: email,
-      password: password,
-      first_name: firstName,
-      last_name: lastName
-    }),
-  });
-
-  setToken(res.token);
-
-  const userData = {
-    id: res.id,
-    email: res.email,
-    first_name: res.first_name,
-    last_name: res.last_name
+    const res = await apiFetch("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
+    });
+    setToken(res.token);
+    const { token: _, ...u } = res;
+    setUser(u);
+    return u;
   };
 
-  setUser(userData);
-  return userData;
+  const logout = async () => {
+    await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    setToken(null);
+    setUser(null);
   };
 
   const refreshUser = fetchUser;
