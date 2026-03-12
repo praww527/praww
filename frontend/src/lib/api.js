@@ -1,4 +1,4 @@
-const BASE = process.env.REACT_APP_BACKEND_URL || "";
+const BASE = process.env.REACT_APP_BACKEND_URL || "https://prawwbackend.onrender.com";
 
 export function getToken() {
   return localStorage.getItem("praww_token");
@@ -27,9 +27,19 @@ export async function apiFetch(path, options = {}) {
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => "{}");
-let err = {};
-try { err = JSON.parse(errText); } catch {}
-throw new Error(String(err.detail || err.message || "Request failed"));
+    let err = {};
+    try { err = JSON.parse(errText); } catch {}
+    let message = "Request failed";
+    if (err.detail) {
+      if (Array.isArray(err.detail)) {
+        message = err.detail.map(e => e.msg || JSON.stringify(e)).join(", ");
+      } else {
+        message = String(err.detail);
+      }
+    } else if (err.message) {
+      message = String(err.message);
+    }
+    throw new Error(message);
   }
   if (res.status === 204) return null;
   const data = await res.json();
