@@ -40,20 +40,27 @@ export function AuthProvider({ children }) {
   };
 
   const register = async (email, password, firstName, lastName) => {
-    const res = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
-    });
-    setToken(res.token);
-    const { token: _, ...u } = res;
-    setUser(u);
-    return u;
+  const res = await apiFetch("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      email: email,
+      password: password,
+      first_name: firstName,
+      last_name: lastName
+    }),
+  });
+
+  setToken(res.token);
+
+  const userData = {
+    id: res.id,
+    email: res.email,
+    first_name: res.first_name,
+    last_name: res.last_name
   };
 
-  const logout = async () => {
-    await apiFetch("/auth/logout", { method: "POST" }).catch(() => {});
-    setToken(null);
-    setUser(null);
+  setUser(userData);
+  return userData;
   };
 
   const refreshUser = fetchUser;
