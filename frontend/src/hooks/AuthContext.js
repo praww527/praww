@@ -34,16 +34,19 @@ export function AuthProvider({ children }) {
   return user;
   };
 
-  const register = async (email, password, firstName, lastName) => {
-    const res = await apiFetch("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ email, password, first_name: firstName, last_name: lastName }),
-    });
-    setToken(res.token);
-    const { token: _, ...u } = res;
-    setUser(u);
-    return u;
-  };
+  const register = async (email, password, firstName) => {
+  const res = await apiFetch("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, firstName }),
+  });
+
+  const data = await res.json();
+
+  setToken(data.token);
+  const { token, ...user } = data;
+  setUser(user);
+  return user;
+};
 
   const logout = async () => {
     await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
