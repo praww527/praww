@@ -26,10 +26,10 @@ export function AuthProvider({ children }) {
       body: JSON.stringify({ email, password }),
     });
     // res contains { token, ...user }
-    setToken(res.token);
-    const { token: _, ...u } = res;
-    setUser(u);
-    return u;
+   setToken(res.token);
+const { token, ...user } = res;
+setUser(user);
+return user;
   };
 
   const register = async (email, password, firstName, lastName) => {
