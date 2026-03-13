@@ -33,7 +33,7 @@ origins = os.environ.get("CORS_ORIGINS", default_origins).split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=origins,
+    allow_origins=["https://prawwfront.onrender.com"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
