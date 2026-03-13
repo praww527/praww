@@ -115,6 +115,13 @@ class UpdateProfileInput(BaseModel):
     last_name: Optional[str] = None
     profile_image_url: Optional[str] = None
 
+class ChangePasswordInput(BaseModel):
+    current_password: str
+    new_password: str
+
+class DeleteAccountInput(BaseModel):
+    password: str
+
 class CreateStoryInput(BaseModel):
     title: str
     content: str
@@ -224,6 +231,37 @@ async def logout(response: Response):
 @api_router.get("/auth/user")
 async def get_user(current_user: dict = Depends(get_current_user)):
     return safe_user(current_user)
+
+@api_router.post("/auth/change-password")
+async def change_password(data: ChangePasswordInput, current_user: dict = Depends(get_current_user)):
+    if not verify_password(data.current_password, current_user.get("password_hash", "")):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(data.new_password) < 6:
+        raise HTTPException(400, "New password must be at least 6 characters")
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"password_hash": hash_password(data.new_password), "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Password updated successfully"}
+
+@api_router.delete("/auth/account")
+async def delete_account(data: DeleteAccountInput, response: Response, current_user: dict = Depends(get_current_user)):
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(400, "Incorrect password")
+    user_id = current_user["id"]
+    await db.stories.delete_many({"author_id": user_id})
+    await db.story_likes.delete_many({"user_id": user_id})
+    await db.story_favorites.delete_many({"user_id": user_id})
+    await db.story_progress.delete_many({"user_id": user_id})
+    await db.story_comments.delete_many({"user_id": user_id})
+    await db.comment_likes.delete_many({"user_id": user_id})
+    await db.books.delete_many({"seller_id": user_id})
+    await db.messages.delete_many({"$or": [{"sender_id": user_id}, {"receiver_id": user_id}]})
+    await db.follows.delete_many({"$or": [{"follower_id": user_id}, {"following_id": user_id}]})
+    await db.book_favorites.delete_many({"user_id": user_id})
+    await db.users.delete_one({"id": user_id})
+    response.delete_cookie("praww_token")
+    return {"message": "Account deleted"}
 
 # ── Profile Routes ──────────────────────────────────────────────────────────
 @api_router.get("/profile/me")

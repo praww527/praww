@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../hooks/AuthContext";
-import { ArrowLeft, BookOpen, Pencil, Loader2, Users, Camera, X, Check, BadgeCheck } from "lucide-react";
+import { ArrowLeft, BookOpen, Pencil, Loader2, Users, Camera, X, Check, BadgeCheck, Lock, Trash2, AlertTriangle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 async function resizeImage(file, maxBytes = 2 * 1024 * 1024) {
@@ -31,17 +31,33 @@ async function resizeImage(file, maxBytes = 2 * 1024 * 1024) {
 
 export default function Profile() {
   const { userId } = useParams();
-  const { user: me, isAuthenticated, loading: authLoading, refreshUser } = useAuth();
+  const { user: me, isAuthenticated, loading: authLoading, refreshUser, logout } = useAuth();
   const navigate = useNavigate();
 
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  // Edit profile
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({});
   const [imagePreview, setImagePreview] = useState("");
   const [imageProcessing, setImageProcessing] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef(null);
+
+  // Change password
+  const [pwOpen, setPwOpen] = useState(false);
+  const [pwForm, setPwForm] = useState({ current_password: "", new_password: "", confirm_password: "" });
+  const [pwError, setPwError] = useState("");
+  const [pwSuccess, setPwSuccess] = useState("");
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+
+  // Delete account
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
   const isOwnProfile = !userId || userId === "me" || userId === me?.id;
 
@@ -115,6 +131,61 @@ export default function Profile() {
     fetchProfile();
   }
 
+  function openPasswordDialog() {
+    setPwForm({ current_password: "", new_password: "", confirm_password: "" });
+    setPwError("");
+    setPwSuccess("");
+    setPwOpen(true);
+  }
+
+  async function handleChangePassword(e) {
+    e.preventDefault();
+    setPwError("");
+    setPwSuccess("");
+    if (!pwForm.current_password) { setPwError("Current password is required"); return; }
+    if (pwForm.new_password.length < 6) { setPwError("New password must be at least 6 characters"); return; }
+    if (pwForm.new_password !== pwForm.confirm_password) { setPwError("New passwords don't match"); return; }
+    setPwSubmitting(true);
+    try {
+      await apiFetch("/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: pwForm.current_password, new_password: pwForm.new_password }),
+      });
+      setPwSuccess("Password updated successfully!");
+      setPwForm({ current_password: "", new_password: "", confirm_password: "" });
+    } catch (err) {
+      setPwError(err.message || "Failed to update password");
+    } finally {
+      setPwSubmitting(false);
+    }
+  }
+
+  function openDeleteDialog() {
+    setDeletePassword("");
+    setDeleteConfirmText("");
+    setDeleteError("");
+    setDeleteOpen(true);
+  }
+
+  async function handleDeleteAccount(e) {
+    e.preventDefault();
+    setDeleteError("");
+    if (deleteConfirmText !== "DELETE") { setDeleteError('Type DELETE (in caps) to confirm'); return; }
+    if (!deletePassword) { setDeleteError("Password is required"); return; }
+    setDeleteSubmitting(true);
+    try {
+      await apiFetch("/auth/account", {
+        method: "DELETE",
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      await logout();
+      navigate("/");
+    } catch (err) {
+      setDeleteError(err.message || "Failed to delete account");
+      setDeleteSubmitting(false);
+    }
+  }
+
   if (authLoading || loading) return (
     <div className="container mx-auto max-w-4xl px-4 py-12 space-y-6">
       <div className="h-24 rounded-2xl bg-muted animate-pulse" />
@@ -136,8 +207,6 @@ export default function Profile() {
     : profile.username || profile.email || "User";
 
   const stories = profile.stories || [];
-
-  // Generate a short readable user ID
   const shortId = profile.id ? `#${profile.id.slice(0, 8).toUpperCase()}` : "";
 
   return (
@@ -149,7 +218,6 @@ export default function Profile() {
       {/* Profile Header */}
       <div className="bg-card border border-border rounded-2xl p-6 sm:p-8 mb-8 shadow-sm">
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
-          {/* Avatar */}
           <div className="relative shrink-0">
             {profile.profile_image_url ? (
               <img src={profile.profile_image_url} alt={displayName} className="w-20 h-20 rounded-full object-cover border-2 border-border" />
@@ -170,7 +238,7 @@ export default function Profile() {
                 {profile.username && <p className="text-sm text-muted-foreground">@{profile.username}</p>}
                 <p className="text-xs text-muted-foreground mt-0.5 font-mono">{shortId}</p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 {isOwnProfile ? (
                   <>
                     <Link to="/write" className="inline-flex items-center gap-1.5 text-sm rounded-lg border border-border px-3 py-1.5 hover:bg-muted transition-colors">
@@ -179,6 +247,10 @@ export default function Profile() {
                     <button data-testid="edit-profile-btn" onClick={openEdit}
                       className="inline-flex items-center gap-1.5 text-sm rounded-lg border border-border px-3 py-1.5 hover:bg-muted transition-colors">
                       <Pencil className="h-3.5 w-3.5" /> Edit Profile
+                    </button>
+                    <button onClick={openPasswordDialog}
+                      className="inline-flex items-center gap-1.5 text-sm rounded-lg border border-border px-3 py-1.5 hover:bg-muted transition-colors">
+                      <Lock className="h-3.5 w-3.5" /> Change Password
                     </button>
                   </>
                 ) : me && (
@@ -242,6 +314,21 @@ export default function Profile() {
         )}
       </div>
 
+      {/* Danger Zone — only for own profile */}
+      {isOwnProfile && (
+        <div className="mt-12 border border-destructive/30 rounded-2xl p-6 bg-destructive/5">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+            <h3 className="font-semibold text-destructive">Danger Zone</h3>
+          </div>
+          <p className="text-sm text-muted-foreground mb-4">Permanently delete your account and all your content. This cannot be undone.</p>
+          <button onClick={openDeleteDialog}
+            className="inline-flex items-center gap-2 rounded-lg border border-destructive text-destructive px-4 py-2 text-sm font-medium hover:bg-destructive hover:text-destructive-foreground transition-colors">
+            <Trash2 className="h-4 w-4" /> Delete Account
+          </button>
+        </div>
+      )}
+
       {/* Edit Profile Dialog */}
       {editOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -251,7 +338,6 @@ export default function Profile() {
               <button onClick={() => setEditOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
             </div>
             <form onSubmit={handleSave} className="space-y-4">
-              {/* Profile Photo */}
               <div className="space-y-2">
                 <label className="text-sm font-medium">Profile Photo</label>
                 <div className="flex items-center gap-4">
@@ -282,7 +368,6 @@ export default function Profile() {
                   </div>
                 </div>
               </div>
-
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-sm font-medium">First Name</label>
@@ -321,7 +406,93 @@ export default function Profile() {
           </div>
         </div>
       )}
+
+      {/* Change Password Dialog */}
+      {pwOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-background rounded-2xl shadow-2xl p-6">
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-2">
+                <Lock className="h-5 w-5 text-primary" />
+                <h2 className="font-serif text-xl font-bold">Change Password</h2>
+              </div>
+              <button onClick={() => setPwOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <form onSubmit={handleChangePassword} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Current Password</label>
+                <input type="password" placeholder="••••••••" value={pwForm.current_password}
+                  onChange={e => setPwForm(f => ({ ...f, current_password: e.target.value }))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">New Password</label>
+                <input type="password" placeholder="At least 6 characters" value={pwForm.new_password}
+                  onChange={e => setPwForm(f => ({ ...f, new_password: e.target.value }))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Confirm New Password</label>
+                <input type="password" placeholder="••••••••" value={pwForm.confirm_password}
+                  onChange={e => setPwForm(f => ({ ...f, confirm_password: e.target.value }))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary" />
+              </div>
+              {pwError && <p className="text-sm text-destructive">{pwError}</p>}
+              {pwSuccess && <p className="text-sm text-green-600 font-medium">{pwSuccess}</p>}
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setPwOpen(false)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors">Cancel</button>
+                <button type="submit" disabled={pwSubmitting}
+                  className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 disabled:opacity-60 flex items-center gap-2">
+                  {pwSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Update Password
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Dialog */}
+      {deleteOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-background rounded-2xl shadow-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+                <h2 className="font-serif text-xl font-bold text-destructive">Delete Account</h2>
+              </div>
+              <button onClick={() => setDeleteOpen(false)} className="text-muted-foreground hover:text-foreground"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4 mb-5 text-sm text-destructive">
+              This will permanently delete your account, all your stories, and all your data. <strong>This cannot be undone.</strong>
+            </div>
+            <form onSubmit={handleDeleteAccount} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Type <span className="font-mono font-bold">DELETE</span> to confirm</label>
+                <input type="text" placeholder="DELETE" value={deleteConfirmText}
+                  onChange={e => setDeleteConfirmText(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-destructive font-mono" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Your Password</label>
+                <input type="password" placeholder="••••••••" value={deletePassword}
+                  onChange={e => setDeletePassword(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-destructive" />
+              </div>
+              {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setDeleteOpen(false)} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors">Cancel</button>
+                <button type="submit" disabled={deleteSubmitting || deleteConfirmText !== "DELETE"}
+                  className="rounded-lg bg-destructive text-destructive-foreground px-4 py-2 text-sm font-medium hover:bg-destructive/90 disabled:opacity-50 flex items-center gap-2">
+                  {deleteSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                  <Trash2 className="h-4 w-4" />
+                  Delete My Account
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
