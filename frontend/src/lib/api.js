@@ -1,4 +1,4 @@
-const BASE = process.env.REACT_APP_BACKEND_URL || "https://prawwbackend.onrender.com";
+const BASE = process.env.REACT_APP_BACKEND_URL || "";
 
 export function getToken() {
   return localStorage.getItem("praww_token");
