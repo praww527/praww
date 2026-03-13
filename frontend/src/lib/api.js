@@ -1,4 +1,4 @@
-const BASE = process.env.REACT_APP_BACKEND_URL || "";
+const BASE = process.env.REACT_APP_BACKEND_URL || "/api";
 
 export function getToken() {
   return localStorage.getItem("praww_token");
